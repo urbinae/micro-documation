@@ -1,20 +1,22 @@
-FROM python:3.12-slim
+FROM python:3.12-bookworm
 
-# Instalar LibreOffice headless y paquetes de fuentes estándar para evitar desfases de texto
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-calc \
+    libreoffice-core \
+    python3-uno \
     fonts-dejavu \
     fonts-liberation \
-    fontconfig \
+    fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-COPY requirements.txt .
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
 
-COPY 2_generar_recibo_service.py app.py
-COPY plantilla_maestra_fixed.xlsx .
-
-EXPOSE 8080
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8080", "--timeout", "90", "app:app"]
+EXPOSE 10000
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}"]
