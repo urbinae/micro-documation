@@ -1,16 +1,7 @@
 """
 Microservicio de generación de recibos en PDF.
-
-Recibe los datos de un recibo por POST, los escribe sobre la plantilla
-maestra ya corregida (ver 1_fix_plantilla_maestra.py), y devuelve el PDF
-resultante generado con LibreOffice headless (preserva imagen y gráfico
-de torta tal cual están en el Excel).
-
-Pensado para correr en un contenedor pequeño (Fly.io, Render, etc.) con
-Python + LibreOffice instalados — NO corre dentro de Vercel, que no
-soporta LibreOffice. Tu función de Vercel llama a este servicio por HTTP.
-
-Dependencias: flask, openpyxl, gunicorn (ver requirements.txt)
+Escribe automáticamente en Duplicado (filas 2-77) y Original (filas 80-153)
+y retorna ambos PDFs o el que se solicite por parámetro.
 """
 
 import os
@@ -24,24 +15,19 @@ from flask import Flask, request, send_file, jsonify
 app = Flask(__name__)
 
 PLANTILLA_MAESTRA = os.path.join(os.path.dirname(__file__), "plantilla_maestra_fixed.xlsx")
+OFFSET_ORIGINAL = 76  # Desplazamiento exacto de filas entre Duplicado y Original
 
-# Nombre de la hoja a usar como base dentro de la plantilla maestra.
-# Si tenés una hoja distinta por empleado en la plantilla original, en
-# producción probablemente quieras UNA sola hoja "molde" y clonarla,
-# en vez de tener una hoja por persona como en el archivo de prueba.
-HOJA_MOLDE = "Molde"
-
-# Mapeo de campos del recibo -> celda. Verificado contra la plantilla real.
-CELDAS = {
+# Mapeo de celdas para el Duplicado (filas 2 a 77)
+CELDAS_BASE = {
     "nombre_apellido": "C8",
-    "periodo_abonado": "B8",       # fecha
+    "periodo_abonado": "B8",
     "cuil": "G7",
     "obra_social": "G9",
     "banco": "B11",
-    "periodo_seg_soc": "C11",      # fecha
-    "fecha_deposito": "D11",       # fecha
+    "periodo_seg_soc": "C11",
+    "fecha_deposito": "D11",
     "tarea": "E11",
-    "fecha_ingreso": "F11",        # fecha
+    "fecha_ingreso": "F11",
     "rem_basica": "G11",
     "remuneracion": "F13",
     "a_cuenta_futuros_aumentos": "F18",
@@ -50,9 +36,8 @@ CELDAS = {
     "importe_obra_social_desc": "G24",
 }
 
-# Tabla que alimenta el gráfico de torta (celdas I65:J70, ya re-vinculadas
-# localmente por el script de arreglo de la plantilla).
-CELDAS_GRAFICO = {
+# Tabla de gráfico Duplicado
+CELDAS_GRAFICO_BASE = {
     "sueldo_neto": "J65",
     "seguridad_social": "J66",
     "obra_social_total": "J67",
@@ -61,31 +46,51 @@ CELDAS_GRAFICO = {
     "scvo": "J70",
 }
 
-# TODO: si tu plantilla tiene una segunda copia del recibo (duplicado) más
-# abajo en la misma hoja, agregá acá el mismo mapeo con el offset de filas
-# correspondiente y escribilo también en `generar_pdf()`.
+
+def desplazar_celda(celda: str, offset: int) -> str:
+    col = "".join([c for c in celda if c.isalpha()])
+    fila = int("".join([c for c in celda if c.isdigit()]))
+    return f"{col}{fila + offset}"
 
 
 def rellenar_datos(ws, datos: dict):
-    for campo, celda in CELDAS.items():
+    # 1. Llenar Duplicado
+    for campo, celda in CELDAS_BASE.items():
         if campo in datos:
             ws[celda] = datos[campo]
-    for campo, celda in CELDAS_GRAFICO.items():
+    for campo, celda in CELDAS_GRAFICO_BASE.items():
         if campo in datos:
             ws[celda] = datos[campo]
 
+    # 2. Llenar Original con offset de 76 filas
+    for campo, celda in CELDAS_BASE.items():
+        if campo in datos:
+            ws[desplazar_celda(celda, OFFSET_ORIGINAL)] = datos[campo]
+    for campo, celda in CELDAS_GRAFICO_BASE.items():
+        if campo in datos:
+            ws[desplazar_celda(celda, OFFSET_ORIGINAL)] = datos[campo]
 
-def convertir_a_pdf(xlsx_path: str, out_dir: str) -> str:
+
+def exportar_rango_pdf(wb, ws, print_area: str, out_pdf_path: str, tmp_dir: str):
+    ws.print_area = print_area
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+
+    temp_xlsx = os.path.join(tmp_dir, f"export_{uuid.uuid4().hex}.xlsx")
+    wb.save(temp_xlsx)
+
     resultado = subprocess.run(
         [
             "soffice", "--headless", "--norestore",
-            "--convert-to", "pdf", "--outdir", out_dir, xlsx_path,
+            "--convert-to", "pdf", "--outdir", tmp_dir, temp_xlsx,
         ],
         capture_output=True, text=True, timeout=60,
     )
     if resultado.returncode != 0:
-        raise RuntimeError(f"Fallo la conversión a PDF: {resultado.stderr}")
-    return os.path.join(out_dir, os.path.basename(xlsx_path).replace(".xlsx", ".pdf"))
+        raise RuntimeError(f"Fallo la conversión de {print_area} a PDF: {resultado.stderr}")
+
+    generated_pdf = temp_xlsx.replace(".xlsx", ".pdf")
+    os.replace(generated_pdf, out_pdf_path)
 
 
 @app.post("/generar-recibo")
@@ -94,27 +99,28 @@ def generar_recibo():
     if not datos:
         return jsonify({"error": "Body JSON vacío"}), 400
 
+    tipo = request.args.get("tipo", "duplicado").lower()  # "duplicado" o "original"
+
     with tempfile.TemporaryDirectory() as tmp:
         wb = openpyxl.load_workbook(PLANTILLA_MAESTRA)
-        ws = wb[HOJA_MOLDE] if HOJA_MOLDE in wb.sheetnames else wb[wb.sheetnames[0]]
+        ws = wb.active
+
         rellenar_datos(ws, datos)
 
-        xlsx_path = os.path.join(tmp, f"recibo_{uuid.uuid4().hex}.xlsx")
-        wb.save(xlsx_path)
+        rango = "B2:G77" if tipo == "duplicado" else "B80:G153"
+        pdf_name = f"recibo_{tipo}_{uuid.uuid4().hex}.pdf"
+        pdf_tmp_path = os.path.join(tmp, pdf_name)
 
         try:
-            pdf_path = convertir_a_pdf(xlsx_path, tmp)
+            exportar_rango_pdf(wb, ws, rango, pdf_tmp_path, tmp)
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 500
 
-        # send_file necesita que el archivo siga existiendo al momento de
-        # enviarlo; lo copiamos fuera del TemporaryDirectory antes de que
-        # se borre al salir del "with".
-        pdf_final = pdf_path.replace(tmp, tempfile.gettempdir())
-        os.replace(pdf_path, pdf_final)
+        pdf_final = os.path.join(tempfile.gettempdir(), pdf_name)
+        os.replace(pdf_tmp_path, pdf_final)
 
     return send_file(pdf_final, mimetype="application/pdf",
-                      as_attachment=True, download_name="recibo.pdf")
+                      as_attachment=True, download_name=f"recibo_{tipo}.pdf")
 
 
 @app.get("/health")
