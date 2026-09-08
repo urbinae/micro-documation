@@ -79,6 +79,7 @@ def uno_path(path: Path) -> str:
 
 
 def export_sheet_range(ctx, input_path: Path, output_path: Path, sheet_name: str, range_a1: str):
+    import uno
     desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
     props = [
         make_prop("Hidden", True),
@@ -96,15 +97,13 @@ def export_sheet_range(ctx, input_path: Path, output_path: Path, sheet_name: str
             raise RuntimeError(f"No existe la hoja '{sheet_name}'.")
 
         target = sheets.getByName(sheet_name)
+        controller = doc.getCurrentController()
+        controller.setActiveSheet(target)
 
-        # Solo dejamos visible la hoja objetivo para que el PDF contenga un recibo.
-        for name in names:
-            sheets.getByName(name).IsVisible = (name == sheet_name)
+        cell_range = target.getCellRangeByName(range_a1)
 
-        target.setPrintAreas((target.getCellRangeByName(range_a1).getRangeAddress(),))
-        doc.getCurrentController().setActiveSheet(target)
-
-        # Equivalente funcional a Excel: FitToPagesWide=1 / FitToPagesTall=1.
+        # Ajuste de escala para que el rango entre en una sola página / se vea
+        # consistente, igual que antes.
         page_style_name = target.getPropertyValue("PageStyle")
         page_styles = doc.getStyleFamilies().getByName("PageStyles")
         page_style = page_styles.getByName(page_style_name)
@@ -115,8 +114,21 @@ def export_sheet_range(ctx, input_path: Path, output_path: Path, sheet_name: str
         if page_style.getPropertySetInfo().hasPropertyByName("PageScale"):
             page_style.setPropertyValue("PageScale", 100)
 
+        # Exportamos SOLO la selección (un rango de UNA sola hoja), en vez de
+        # ocultar el resto de las hojas y depender de PrintAreas del
+        # documento. Ocultar hojas en un documento cargado en modo ReadOnly
+        # no siempre se aplica de forma confiable al exportar, y eso era lo
+        # que producía un único PDF con todas las hojas/empleados juntos.
+        controller.select(cell_range)
+
+        filter_data = uno.Any(
+            "[]com.sun.star.beans.PropertyValue",
+            (make_prop("Selection", cell_range),),
+        )
+
         filter_props = (
             make_prop("FilterName", "calc_pdf_Export"),
+            make_prop("FilterData", filter_data),
             make_prop("Overwrite", True),
         )
         doc.storeToURL(uno_path(output_path), filter_props)
