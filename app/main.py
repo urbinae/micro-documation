@@ -14,8 +14,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 EXCLUDED_SHEETS = {"Modelo", "SICOSS", "Resumen", "CUSS", "Hoja6", "SAC_VAC"}
-ORIGINAL_RANGE = "B80:H153"
-DUPLICATE_RANGE = "B2:H77"
+ORIGINAL_RANGE = "B80:G153"
+DUPLICATE_RANGE = "B2:G77"
 MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "50"))
 
 app = FastAPI(title="DocuMation Recibos PDF", version="2.0.0")
@@ -227,6 +227,14 @@ async def process(file: UploadFile, month: str):
             "X-Generated-Count": str(len(generated)),
         }
         return Response(zip_buffer.getvalue(), media_type="application/zip", headers=headers)
+
+
+@app.get("/")
+def root():
+    # Responde 200 en la raíz para que el health check por defecto de Render
+    # (HEAD/GET a "/") no marque la instancia como "unhealthy" y la reinicie
+    # en medio de una conversión en curso.
+    return {"status": "ok", "service": "DocuMation Recibos PDF"}
 
 
 @app.get("/health")
