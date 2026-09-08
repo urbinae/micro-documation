@@ -103,7 +103,11 @@ def export_sheet_range(ctx, input_path: Path, output_path: Path, sheet_name: str
         cell_range = target.getCellRangeByName(range_a1)
 
         # Ajuste de escala para que el rango entre en una sola página / se vea
-        # consistente, igual que antes.
+        # consistente, igual que antes. IMPORTANTE: no seteamos PageScale acá
+        # — es un modo de escala distinto y mutuamente excluyente con
+        # ScaleToPagesX/Y ("ajustar a N páginas"). Setear PageScale después
+        # pisaba el ajuste a 1 página y hacía que el recibo saliera partido
+        # en varias hojas.
         page_style_name = target.getPropertyValue("PageStyle")
         page_styles = doc.getStyleFamilies().getByName("PageStyles")
         page_style = page_styles.getByName(page_style_name)
@@ -111,8 +115,6 @@ def export_sheet_range(ctx, input_path: Path, output_path: Path, sheet_name: str
             page_style.setPropertyValue("ScaleToPagesX", 1)
         if page_style.getPropertySetInfo().hasPropertyByName("ScaleToPagesY"):
             page_style.setPropertyValue("ScaleToPagesY", 1)
-        if page_style.getPropertySetInfo().hasPropertyByName("PageScale"):
-            page_style.setPropertyValue("PageScale", 100)
 
         # Exportamos SOLO la selección (un rango de UNA sola hoja), en vez de
         # ocultar el resto de las hojas y depender de PrintAreas del
