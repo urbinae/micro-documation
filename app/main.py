@@ -14,8 +14,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 EXCLUDED_SHEETS = {"Modelo", "SICOSS", "Resumen", "CUSS", "Hoja6", "SAC_VAC"}
-ORIGINAL_RANGE = "B80:G153"
-DUPLICATE_RANGE = "B2:G77"
+ORIGINAL_RANGE = "B80:H153"
+DUPLICATE_RANGE = "B2:H77"
 MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "50"))
 
 app = FastAPI(title="DocuMation Recibos PDF", version="2.0.0")
