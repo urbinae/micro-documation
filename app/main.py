@@ -102,15 +102,28 @@ def export_sheet_range(ctx, input_path: Path, output_path: Path, sheet_name: str
 
         cell_range = target.getCellRangeByName(range_a1)
 
+        # Tamaño de página: Carta (Letter, 8.5" x 11") en vez del A4 por
+        # defecto. Las unidades son 1/100 mm.
+        LETTER_WIDTH_100MM = 21590
+        LETTER_HEIGHT_100MM = 27940
+
+        page_style_name = target.getPropertyValue("PageStyle")
+        page_styles = doc.getStyleFamilies().getByName("PageStyles")
+        page_style = page_styles.getByName(page_style_name)
+
+        if page_style.getPropertySetInfo().hasPropertyByName("IsLandscape"):
+            page_style.setPropertyValue("IsLandscape", False)
+        if page_style.getPropertySetInfo().hasPropertyByName("Width"):
+            page_style.setPropertyValue("Width", LETTER_WIDTH_100MM)
+        if page_style.getPropertySetInfo().hasPropertyByName("Height"):
+            page_style.setPropertyValue("Height", LETTER_HEIGHT_100MM)
+
         # Ajuste de escala para que el rango entre en una sola página / se vea
         # consistente, igual que antes. IMPORTANTE: no seteamos PageScale acá
         # — es un modo de escala distinto y mutuamente excluyente con
         # ScaleToPagesX/Y ("ajustar a N páginas"). Setear PageScale después
         # pisaba el ajuste a 1 página y hacía que el recibo saliera partido
         # en varias hojas.
-        page_style_name = target.getPropertyValue("PageStyle")
-        page_styles = doc.getStyleFamilies().getByName("PageStyles")
-        page_style = page_styles.getByName(page_style_name)
         if page_style.getPropertySetInfo().hasPropertyByName("ScaleToPagesX"):
             page_style.setPropertyValue("ScaleToPagesX", 1)
         if page_style.getPropertySetInfo().hasPropertyByName("ScaleToPagesY"):
