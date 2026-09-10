@@ -216,7 +216,7 @@ async def process(file: UploadFile, month: str):
         raise HTTPException(413, f"El Excel supera el límite de {MAX_FILE_MB} MB.")
 
     # Solo almacenamiento transitorio durante la petición. No se persiste nada.
-    with tempfile.TemporaryDirectory(prefix="documation-") as td:
+    with tempfile.TemporaryDirectory(prefix="documation-", dir="/tmp") as td:
         work_dir = Path(td)
         input_ext = ".xlsx" if file.filename.lower().endswith(".xlsx") else ".xls"
         input_path = work_dir / f"source{input_ext}"
