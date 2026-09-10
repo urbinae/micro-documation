@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -36,6 +37,11 @@ def validate_month(month: str) -> bool:
     return bool(re.fullmatch(r"\d{4}-\d{2}", month or ""))
 
 
+def get_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
 def start_libreoffice(profile_dir: Path, port: int = 2002):
     profile_uri = profile_dir.resolve().as_uri()
     cmd = [
@@ -48,10 +54,9 @@ def start_libreoffice(profile_dir: Path, port: int = 2002):
         f"--accept=socket,host=127.0.0.1,port={port};urp;StarOffice.ComponentContext",
     ]
     env = os.environ.copy()
-    env["LANG"] = "es_AR.UTF-8"
-    env["LC_ALL"] = "es_AR.UTF-8"
+    env["LANG"] = "C.UTF-8"
+    env["LC_ALL"] = "C.UTF-8"
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
-
 
 def wait_for_uno(port: int, timeout: float = 20):
     # UNO is imported from the python3-uno Debian package installed in the image.
@@ -84,9 +89,10 @@ def uno_path(path: Path) -> str:
 def export_sheet_range(ctx, input_path: Path, output_path: Path, sheet_name: str, range_a1: str):
     import uno
     desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
+    
+    # 1. No abrir como ReadOnly para permitir configurar la página sin bloqueos de LibreOffice
     props = [
         make_prop("Hidden", True),
-        make_prop("ReadOnly", True),
         make_prop("UpdateDocMode", 3),
     ]
     doc = desktop.loadComponentFromURL(uno_path(input_path), "_blank", 0, tuple(props))
@@ -105,8 +111,6 @@ def export_sheet_range(ctx, input_path: Path, output_path: Path, sheet_name: str
 
         cell_range = target.getCellRangeByName(range_a1)
 
-        # Tamaño de página: Carta (Letter, 8.5" x 11") en vez del A4 por
-        # defecto. Las unidades son 1/100 mm.
         LETTER_WIDTH_100MM = 21590
         LETTER_HEIGHT_100MM = 27940
 
@@ -121,22 +125,11 @@ def export_sheet_range(ctx, input_path: Path, output_path: Path, sheet_name: str
         if page_style.getPropertySetInfo().hasPropertyByName("Height"):
             page_style.setPropertyValue("Height", LETTER_HEIGHT_100MM)
 
-        # Ajuste de escala para que el rango entre en una sola página / se vea
-        # consistente, igual que antes. IMPORTANTE: no seteamos PageScale acá
-        # — es un modo de escala distinto y mutuamente excluyente con
-        # ScaleToPagesX/Y ("ajustar a N páginas"). Setear PageScale después
-        # pisaba el ajuste a 1 página y hacía que el recibo saliera partido
-        # en varias hojas.
         if page_style.getPropertySetInfo().hasPropertyByName("ScaleToPagesX"):
             page_style.setPropertyValue("ScaleToPagesX", 1)
         if page_style.getPropertySetInfo().hasPropertyByName("ScaleToPagesY"):
             page_style.setPropertyValue("ScaleToPagesY", 1)
 
-        # Exportamos SOLO la selección (un rango de UNA sola hoja), en vez de
-        # ocultar el resto de las hojas y depender de PrintAreas del
-        # documento. Ocultar hojas en un documento cargado en modo ReadOnly
-        # no siempre se aplica de forma confiable al exportar, y eso era lo
-        # que producía un único PDF con todas las hojas/empleados juntos.
         controller.select(cell_range)
 
         filter_data = uno.Any(
@@ -149,10 +142,18 @@ def export_sheet_range(ctx, input_path: Path, output_path: Path, sheet_name: str
             make_prop("FilterData", filter_data),
             make_prop("Overwrite", True),
         )
-        doc.storeToURL(uno_path(output_path), filter_props)
+        
+        # 2. Exportar a un nombre temporal ASCII puro para evitar fallos de codificación/tildes en LibreOffice
+        temp_ascii_pdf = output_path.parent / f"export_{uuid.uuid4().hex}.pdf"
+        doc.storeToURL(uno_path(temp_ascii_pdf), filter_props)
+
+        # 3. Mover/renombrar con Python al nombre final (Python maneja UTF-8 nativamente sin problemas)
+        if output_path.exists():
+            output_path.unlink()
+        temp_ascii_pdf.rename(output_path)
+
     finally:
         doc.close(True)
-
 
 def make_prop(name, value):
     import uno
@@ -166,7 +167,7 @@ def make_prop(name, value):
 def render_workbook(input_path: Path, work_dir: Path, month: str):
     profile = work_dir / "lo-profile"
     profile.mkdir(parents=True, exist_ok=True)
-    port = 2002
+    port = get_free_port()
     proc = start_libreoffice(profile, port)
     try:
         ctx = wait_for_uno(port)
@@ -216,7 +217,9 @@ async def process(file: UploadFile, month: str):
         raise HTTPException(413, f"El Excel supera el límite de {MAX_FILE_MB} MB.")
 
     # Solo almacenamiento transitorio durante la petición. No se persiste nada.
+    # Usamos un directorio 'tmp' local para evitar problemas con LibreOffice instalado vía Snap.
     with tempfile.TemporaryDirectory(prefix="documation-") as td:
+        work_dir = Path(td)
         work_dir = Path(td)
         input_ext = ".xlsx" if file.filename.lower().endswith(".xlsx") else ".xls"
         input_path = work_dir / f"source{input_ext}"
