@@ -47,7 +47,10 @@ def start_libreoffice(profile_dir: Path, port: int = 2002):
         f"-env:UserInstallation={profile_uri}",
         f"--accept=socket,host=127.0.0.1,port={port};urp;StarOffice.ComponentContext",
     ]
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    env = os.environ.copy()
+    env["LANG"] = "es_AR.UTF-8"
+    env["LC_ALL"] = "es_AR.UTF-8"
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
 
 def wait_for_uno(port: int, timeout: float = 20):
